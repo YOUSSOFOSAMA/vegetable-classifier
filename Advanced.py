@@ -123,61 +123,6 @@ h3 {color:#006400;}
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------- GRAD-CAM ----------------
-def compute_gradcam(model, img_array, class_index):
-    img_tensor = tf.convert_to_tensor(img_array, dtype=tf.float32)
-
-    # Dynamically find the last Conv2D layer in the model
-    last_conv_layer = None
-    for layer in reversed(model.layers):
-        if isinstance(layer, (tf.keras.layers.Conv2D,
-                              tf.keras.layers.SeparableConv2D,
-                              tf.keras.layers.DepthwiseConv2D)):
-            last_conv_layer = layer
-            break
-
-    if last_conv_layer is None:
-        raise ValueError("No convolutional layer found in the model.")
-
-    # Build a model that outputs the conv layer and final predictions
-    grad_model = tf.keras.models.Model(
-        inputs=model.inputs,
-        outputs=[last_conv_layer.output, model.output]
-    )
-
-    with tf.GradientTape() as tape:
-        conv_outputs, predictions = grad_model(img_tensor)
-        loss = predictions[:, class_index]
-
-    grads = tape.gradient(loss, conv_outputs)
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-    conv_outputs = conv_outputs[0]
-    heatmap = tf.reduce_sum(conv_outputs * pooled_grads, axis=-1)
-    heatmap = tf.maximum(heatmap, 0)
-    heatmap /= tf.reduce_max(heatmap) + 1e-9
-
-    return heatmap.numpy()
-
-
-def overlay_gradcam(image, heatmap, alpha=0.4):
-    heatmap = np.uint8(255 * heatmap)
-    heatmap = Image.fromarray(heatmap).resize(image.size)
-
-    heatmap = np.array(heatmap)
-    colormap = plt.get_cmap("jet")
-    colored = colormap(heatmap / 255.0)
-    colored = np.uint8(colored[:, :, :3] * 255)
-
-    overlay = np.array(image) * (1 - alpha) + colored * alpha
-    return Image.fromarray(np.uint8(overlay))
-
-def safe_compute_gradcam(model, img_array, class_index):
-    try:
-        return compute_gradcam(model, img_array, class_index)
-    except ValueError:
-        st.warning("Grad-CAM skipped: convolutional layers not found.")
-        return None
-
 # ---------------- CSS ----------------
 st.markdown("""
 <style>
@@ -499,3 +444,4 @@ if image_input:
 else:
     st.info("👆 Upload a vegetable image or take a photo to discover authentic Egyptian recipes!")
     st.markdown("**Supported vegetables:** " + ", ".join(CLASS_NAMES))
+
