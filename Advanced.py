@@ -125,12 +125,9 @@ h3 {color:#006400;}
 
 # ---------------- GRAD-CAM ----------------
 def compute_gradcam(model, img_array, class_index):
-    """
-    Grad-CAM for a Keras model without hardcoding layer names.
-    """
     img_tensor = tf.convert_to_tensor(img_array, dtype=tf.float32)
 
-    # Dynamically find last Conv2D layer
+    # Dynamically find the last Conv2D layer in the model
     last_conv_layer = None
     for layer in reversed(model.layers):
         if isinstance(layer, (tf.keras.layers.Conv2D,
@@ -138,9 +135,11 @@ def compute_gradcam(model, img_array, class_index):
                               tf.keras.layers.DepthwiseConv2D)):
             last_conv_layer = layer
             break
-    if last_conv_layer is None:
-        raise ValueError("No convolutional layer found in model.")
 
+    if last_conv_layer is None:
+        raise ValueError("No convolutional layer found in the model.")
+
+    # Build a model that outputs the conv layer and final predictions
     grad_model = tf.keras.models.Model(
         inputs=model.inputs,
         outputs=[last_conv_layer.output, model.output]
@@ -152,14 +151,13 @@ def compute_gradcam(model, img_array, class_index):
 
     grads = tape.gradient(loss, conv_outputs)
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-
     conv_outputs = conv_outputs[0]
     heatmap = tf.reduce_sum(conv_outputs * pooled_grads, axis=-1)
-
     heatmap = tf.maximum(heatmap, 0)
     heatmap /= tf.reduce_max(heatmap) + 1e-9
 
     return heatmap.numpy()
+
 
 def overlay_gradcam(image, heatmap, alpha=0.4):
     heatmap = np.uint8(255 * heatmap)
@@ -525,6 +523,7 @@ if image_input:
 else:
     st.info("👆 Upload a vegetable image or take a photo to discover authentic Egyptian recipes!")
     st.markdown("**Supported vegetables:** " + ", ".join(CLASS_NAMES))
+
 
 
 
