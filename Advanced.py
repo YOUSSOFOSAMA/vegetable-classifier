@@ -149,10 +149,7 @@ def compute_gradcam(model, img_array, class_index):
         conv_outputs, features = grad_model(img_tensor, training=False)
 
         # 5️⃣ Manually forward through classifier head
-        x = features
-        for layer in model.layers[model.layers.index(effnet)+1:]:
-            x = layer(x)
-
+        x = tf.reshape(x, (x.shape[0], -1))
         loss = x[:, class_index]
 
     # 6️⃣ Gradients
@@ -536,3 +533,4 @@ if image_input:
 else:
     st.info("👆 Upload a vegetable image or take a photo to discover authentic Egyptian recipes!")
     st.markdown("**Supported vegetables:** " + ", ".join(CLASS_NAMES))
+
