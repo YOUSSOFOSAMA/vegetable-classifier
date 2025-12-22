@@ -126,18 +126,24 @@ h3 {color:#006400;}
 # ---------------- GRAD-CAM ----------------
 def compute_gradcam(model, img_array, class_index):
     """
-    Grad-CAM for EfficientNet model with Keras 3 safe implementation.
+    Grad-CAM for a Keras model without hardcoding layer names.
     """
     img_tensor = tf.convert_to_tensor(img_array, dtype=tf.float32)
 
-    # Get EfficientNet backbone
-    effnet = model.get_layer("efficientnetb0")
-    last_conv = effnet.get_layer("top_conv")
+    # Dynamically find last Conv2D layer
+    last_conv_layer = None
+    for layer in reversed(model.layers):
+        if isinstance(layer, (tf.keras.layers.Conv2D,
+                              tf.keras.layers.SeparableConv2D,
+                              tf.keras.layers.DepthwiseConv2D)):
+            last_conv_layer = layer
+            break
+    if last_conv_layer is None:
+        raise ValueError("No convolutional layer found in model.")
 
-    # Build model to get conv outputs and final logits
     grad_model = tf.keras.models.Model(
-        inputs=effnet.input,
-        outputs=[last_conv.output, model.output]  # full model output
+        inputs=model.inputs,
+        outputs=[last_conv_layer.output, model.output]
     )
 
     with tf.GradientTape() as tape:
@@ -147,19 +153,13 @@ def compute_gradcam(model, img_array, class_index):
     grads = tape.gradient(loss, conv_outputs)
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
 
-    conv_outputs = conv_outputs[0]  # remove batch dimension
+    conv_outputs = conv_outputs[0]
     heatmap = tf.reduce_sum(conv_outputs * pooled_grads, axis=-1)
 
     heatmap = tf.maximum(heatmap, 0)
     heatmap /= tf.reduce_max(heatmap) + 1e-9
 
     return heatmap.numpy()
-
-
-
-
-
-
 
 def overlay_gradcam(image, heatmap, alpha=0.4):
     heatmap = np.uint8(255 * heatmap)
@@ -525,5 +525,6 @@ if image_input:
 else:
     st.info("👆 Upload a vegetable image or take a photo to discover authentic Egyptian recipes!")
     st.markdown("**Supported vegetables:** " + ", ".join(CLASS_NAMES))
+
 
 
