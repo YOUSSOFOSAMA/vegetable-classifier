@@ -123,46 +123,38 @@ h3 {color:#006400;}
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------- GRAD-CAM (KERAS 3 SAFE) ----------------
-# ---------------- GRAD-CAM (EFFICIENTNET SAFE) ----------------
+# ---------------- GRAD-CAM ----------------
 def compute_gradcam(model, img_array, class_index):
     """
-    Grad-CAM for EfficientNet model with preprocessing.
-    Keras 3 CORRECT implementation.
+    Grad-CAM for EfficientNet model with Keras 3 safe implementation.
     """
+    img_tensor = tf.convert_to_tensor(img_array, dtype=tf.float32)
 
-    # 1️⃣ Convert input
-    img_tensor = tf.convert_to_tensor(img_array)
-
-    # 2️⃣ Get EfficientNet backbone
+    # Get EfficientNet backbone
     effnet = model.get_layer("efficientnetb0")
     last_conv = effnet.get_layer("top_conv")
 
-    # 3️⃣ Build a model FROM effnet.input
+    # Build model to get conv outputs and final logits
     grad_model = tf.keras.models.Model(
         inputs=effnet.input,
-        outputs=[last_conv.output, effnet.output]
+        outputs=[last_conv.output, model.output]  # full model output
     )
 
-    # 4️⃣ Forward pass through preprocessing + backbone
     with tf.GradientTape() as tape:
-        conv_outputs, features = grad_model(img_tensor, training=False)
+        conv_outputs, predictions = grad_model(img_tensor)
+        loss = predictions[:, class_index]
 
-        # 5️⃣ Manually forward through classifier head
-        x = tf.reshape(x, (x.shape[0], -1))
-        loss = x[:, class_index]
-
-    # 6️⃣ Gradients
     grads = tape.gradient(loss, conv_outputs)
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
 
-    conv_outputs = conv_outputs[0]
+    conv_outputs = conv_outputs[0]  # remove batch dimension
     heatmap = tf.reduce_sum(conv_outputs * pooled_grads, axis=-1)
 
     heatmap = tf.maximum(heatmap, 0)
     heatmap /= tf.reduce_max(heatmap) + 1e-9
 
     return heatmap.numpy()
+
 
 
 
@@ -533,4 +525,5 @@ if image_input:
 else:
     st.info("👆 Upload a vegetable image or take a photo to discover authentic Egyptian recipes!")
     st.markdown("**Supported vegetables:** " + ", ".join(CLASS_NAMES))
+
 
