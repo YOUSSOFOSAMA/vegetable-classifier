@@ -476,37 +476,6 @@ if image_input:
         st.markdown('</div>',unsafe_allow_html=True)
         if final_class==UNKNOWN_LABEL:
             st.warning("⚠️ Prediction rejected due to low confidence or model disagreement.")
-    # ---------------- GRAD-CAM VISUALIZATION ----------------
-    if (
-        final_class != UNKNOWN_LABEL
-        and model_choice in ["EfficientNetB0", "Compare Both"]
-        and effnet_model is not None
-        and final_conf >= HIGH_CONF_THRESHOLD
-        and agreement.startswith("🟢")
-        ):
-        st.markdown("### 🔍 Model Attention (Grad-CAM)")
-        st.markdown("*This visualization shows which regions influenced the model’s decision.*")
-
-        heatmap = safe_compute_gradcam(effnet_model, eff_batch, top_idx)
-        if heatmap is not None:
-            gradcam_image = overlay_gradcam(image_input, heatmap)
-            st.image(gradcam_image, caption="Grad-CAM")
-        st.session_state["gradcam_image"] = gradcam_image
-
-        st.image(
-            gradcam_image,
-            caption="Grad-CAM: Model Focus Regions",
-            use_column_width=True
-            )
-
-        st.info(
-            "🧠 Grad-CAM highlights regions that most influenced the model’s confident prediction."
-            )
-    else:
-        st.warning(
-            "Grad-CAM suppressed due to low confidence, model disagreement, "
-            "or unsupported input."
-            )
 
 
     # PDF Download
@@ -518,7 +487,6 @@ if image_input:
     agreement,
     inference_times,
     entropy_scores,
-    gradcam_image=st.session_state.get("gradcam_image")
 )
 
         st.download_button(
@@ -531,8 +499,3 @@ if image_input:
 else:
     st.info("👆 Upload a vegetable image or take a photo to discover authentic Egyptian recipes!")
     st.markdown("**Supported vegetables:** " + ", ".join(CLASS_NAMES))
-
-
-
-
-
