@@ -171,6 +171,12 @@ def overlay_gradcam(image, heatmap, alpha=0.4):
     overlay = np.array(image) * (1 - alpha) + colored * alpha
     return Image.fromarray(np.uint8(overlay))
 
+def safe_compute_gradcam(model, img_array, class_index):
+    try:
+        return compute_gradcam(model, img_array, class_index)
+    except ValueError:
+        st.warning("Grad-CAM skipped: convolutional layers not found.")
+        return None
 
 # ---------------- CSS ----------------
 st.markdown("""
@@ -481,8 +487,10 @@ if image_input:
         st.markdown("### 🔍 Model Attention (Grad-CAM)")
         st.markdown("*This visualization shows which regions influenced the model’s decision.*")
 
-        heatmap = compute_gradcam(effnet_model, eff_batch, top_idx)
-        gradcam_image = overlay_gradcam(image_input, heatmap)
+        heatmap = safe_compute_gradcam(effnet_model, eff_batch, top_idx)
+        if heatmap is not None:
+            gradcam_image = overlay_gradcam(image_input, heatmap)
+            st.image(gradcam_image, caption="Grad-CAM")
         st.session_state["gradcam_image"] = gradcam_image
 
         st.image(
@@ -523,6 +531,7 @@ if image_input:
 else:
     st.info("👆 Upload a vegetable image or take a photo to discover authentic Egyptian recipes!")
     st.markdown("**Supported vegetables:** " + ", ".join(CLASS_NAMES))
+
 
 
 
