@@ -4,9 +4,12 @@ import io
 import time
 from datetime import datetime
 import numpy as np
+import tensorflow as tf
 import matplotlib.pyplot as plt
 from tensorflow.keras.models import load_model
 from tensorflow.keras.applications.efficientnet import preprocess_input as efficient_preprocess
+from tensorflow.keras.layers import Conv2D, SeparableConv2D, DepthwiseConv2D
+
 
 # ReportLab for PDF generation
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
@@ -14,6 +17,9 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 from reportlab.lib.units import cm
+
+if "gradcam_image" not in st.session_state:
+    st.session_state["gradcam_image"] = None
 
 # ---------------- CONFIG ----------------
 st.set_page_config(
@@ -32,6 +38,10 @@ CLASS_NAMES = [
     "Cabbage", "Capsicum", "Carrot", "Cauliflower", "Cucumber",
     "Papaya", "Potato", "Pumpkin", "Radish", "Tomato"
 ]
+
+def prediction_entropy(probs):
+    probs = np.clip(probs, 1e-9, 1)
+    return -np.sum(probs * np.log(probs))
 
 # ---------------- NUTRITION & RECIPES ----------------
 NUTRITION_INFO = {
@@ -113,6 +123,77 @@ h3 {color:#006400;}
 </style>
 """, unsafe_allow_html=True)
 
+# ---------------- GRAD-CAM (KERAS 3 SAFE) ----------------
+# ---------------- GRAD-CAM (EFFICIENTNET SAFE) ----------------
+def compute_gradcam(model, img_array, class_index):
+    """
+    Grad-CAM for EfficientNet model with preprocessing.
+    Keras 3 CORRECT implementation.
+    """
+
+    # 1️⃣ Convert input
+    img_tensor = tf.convert_to_tensor(img_array)
+
+    # 2️⃣ Get EfficientNet backbone
+    effnet = model.get_layer("efficientnetb0")
+    last_conv = effnet.get_layer("top_conv")
+
+    # 3️⃣ Build a model FROM effnet.input
+    grad_model = tf.keras.models.Model(
+        inputs=effnet.input,
+        outputs=[last_conv.output, effnet.output]
+    )
+
+    # 4️⃣ Forward pass through preprocessing + backbone
+    with tf.GradientTape() as tape:
+        conv_outputs, features = grad_model(img_tensor, training=False)
+
+        # 5️⃣ Manually forward through classifier head
+        x = features
+        for layer in model.layers[model.layers.index(effnet)+1:]:
+            x = layer(x)
+
+        loss = x[:, class_index]
+
+    # 6️⃣ Gradients
+    grads = tape.gradient(loss, conv_outputs)
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+
+    conv_outputs = conv_outputs[0]
+    heatmap = tf.reduce_sum(conv_outputs * pooled_grads, axis=-1)
+
+    heatmap = tf.maximum(heatmap, 0)
+    heatmap /= tf.reduce_max(heatmap) + 1e-9
+
+    return heatmap.numpy()
+
+
+
+
+
+
+def overlay_gradcam(image, heatmap, alpha=0.4):
+    heatmap = np.uint8(255 * heatmap)
+    heatmap = Image.fromarray(heatmap).resize(image.size)
+
+    heatmap = np.array(heatmap)
+    colormap = plt.get_cmap("jet")
+    colored = colormap(heatmap / 255.0)
+    colored = np.uint8(colored[:, :, :3] * 255)
+
+    overlay = np.array(image) * (1 - alpha) + colored * alpha
+    return Image.fromarray(np.uint8(overlay))
+
+
+# ---------------- CSS ----------------
+st.markdown("""
+<style>
+h1 {font-size:42px;color:#2E8B57;font-family:Arial;}
+.card {background-color:#ffffff;border-radius:12px;padding:20px;
+box-shadow:0 6px 18px rgba(0,0,0,0.07);}
+</style>
+""", unsafe_allow_html=True)
+
 # ---------------- LOAD MODELS ----------------
 @st.cache_resource
 def load_models():
@@ -131,7 +212,15 @@ def load_models():
 cnn_model, effnet_model = load_models()
 
 # ---------------- PDF FUNCTION ----------------
-def generate_pdf_report(image, image_size, top3_details, agreement_text, inference_times):
+def generate_pdf_report(
+    image,
+    image_size,
+    top3_details,
+    agreement_text,
+    inference_times,
+    entropy_scores,
+    gradcam_image=None
+):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=2*cm, leftMargin=2*cm,
                             topMargin=2*cm, bottomMargin=2*cm)
@@ -143,12 +232,51 @@ def generate_pdf_report(image, image_size, top3_details, agreement_text, inferen
     elements.append(Paragraph(f"<b>Date:</b> {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles["Normal"]))
     elements.append(Spacer(1, 12))
 
-    elements.append(Paragraph("<b>Uploaded Image</b>", styles["Heading2"]))
-    img_buffer = io.BytesIO()
-    image.save(img_buffer, format="PNG")
-    img_buffer.seek(0)
-    rl_img = RLImage(img_buffer, width=10*cm, height=10*cm)
-    elements.append(rl_img)
+    elements.append(Paragraph("<b>Visual Explanation</b>", styles["Heading2"]))
+    elements.append(Spacer(1, 8))
+
+    img_table = []
+
+    # Original image
+    orig_buf = io.BytesIO()
+    image.save(orig_buf, format="PNG")
+    orig_buf.seek(0)
+    orig_img = RLImage(orig_buf, width=7*cm, height=7*cm)
+
+    if gradcam_image is not None:
+        cam_buf = io.BytesIO()
+        gradcam_image.save(cam_buf, format="PNG")
+        cam_buf.seek(0)
+        cam_img = RLImage(cam_buf, width=7*cm, height=7*cm)
+
+        img_table.append([
+            Paragraph("<b>Original</b>", styles["Normal"]),
+            Paragraph("<b>Grad-CAM</b>", styles["Normal"])
+        ])
+        img_table.append([orig_img, cam_img])
+    else:
+        img_table.append([orig_img])
+
+    table = Table(
+        img_table,
+        colWidths=[7*cm, 7*cm] if gradcam_image is not None else [7*cm]
+    )
+
+    table.setStyle(TableStyle([
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 12),
+    ]))
+
+    elements.append(table)
+    elements.append(
+        Paragraph(
+            f"Resolution: {image_size[0]} × {image_size[1]} pixels",
+            styles["Normal"]
+        )
+    )
+    elements.append(Spacer(1, 12))
+
     elements.append(Paragraph(f"Resolution: {image_size[0]} × {image_size[1]} pixels", styles["Normal"]))
     elements.append(Spacer(1, 12))
 
@@ -158,7 +286,12 @@ def generate_pdf_report(image, image_size, top3_details, agreement_text, inferen
 
     elements.append(Paragraph("<b>Top Predictions</b>", styles["Heading2"]))
     for model_name, preds in top3_details.items():
-        elements.append(Paragraph(f"<b>{model_name}</b> (Time: {inference_times.get(model_name, 0):.3f}s)", styles["Heading3"]))
+        elements.append(Paragraph(
+            f"<b>{model_name}</b> | "
+            f"Time: {inference_times[model_name]:.3f}s | "
+            f"Entropy: {entropy_scores[model_name]:.3f}",
+            styles["Heading3"]
+        ))
         table_data = [["Rank", "Vegetable", "Confidence (%)"]]
         for i, (cls, conf) in enumerate(preds, 1):
             table_data.append([i, cls, f"{conf*100:.2f}"])
@@ -169,10 +302,6 @@ def generate_pdf_report(image, image_size, top3_details, agreement_text, inferen
             ('ALIGN', (2,1), (-1,-1), 'CENTER')
         ]))
         elements.append(table)
-        elements.append(Spacer(1, 8))
-
-    elements.append(Spacer(1, 20))
-    elements.append(Paragraph("Generated using Egyptian cuisine recipes.", styles["Italic"]))
     doc.build(elements)
     buffer.seek(0)
     return buffer
@@ -180,6 +309,15 @@ def generate_pdf_report(image, image_size, top3_details, agreement_text, inferen
 # ---------------- MAIN APP ----------------
 st.title("🥬 Egyptian Vegetable Classifier")
 st.markdown("*Upload a vegetable → Get authentic Egyptian recipes & nutrition!*")
+
+with st.expander("ℹ️ Model Scope & Limitations"):
+    st.markdown("""
+    - Trained on **15 vegetable classes only**
+    - Uses **closed-set classification**
+    - Out-of-distribution inputs (e.g. fruits, objects, people) are **rejected**
+    - Predictions are **confidence-gated**
+    - Low-confidence or conflicting model outputs are labeled as **Unknown**
+    """)
 
 available_models = []
 if cnn_model: available_models.append("Custom CNN")
@@ -207,7 +345,7 @@ def get_top_predictions(preds, top_k=3):
 
 def plot_top_predictions(model_name, preds):
     classes = [c for c,_ in preds]
-    confs = [c*100 for _,c in preds]
+    confs = [conf*100 for _, conf in preds]
     fig,ax=plt.subplots(figsize=(5,2))
     bars=ax.barh(classes[::-1],confs[::-1],color='#228B22')
     ax.set_xlim(0,100)
@@ -219,34 +357,69 @@ def plot_top_predictions(model_name, preds):
     plt.tight_layout()
     st.pyplot(fig, use_container_width=True)
     plt.close()
+    
+# ---------------- INPUT QUALITY CHECKS ----------------
+def is_image_blurry(image, threshold=100.0):
+    """Returns True if image is blurry based on Laplacian variance."""
+    gray = np.array(image.convert("L"))
+    lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+    return lap_var < threshold, lap_var
+
+MIN_WIDTH, MIN_HEIGHT = 100, 100  # Minimum acceptable resolution
+
+if image_input:
+    # Resolution check
+    if image_input.width < MIN_WIDTH or image_input.height < MIN_HEIGHT:
+        st.error("❌ Image resolution too low for reliable classification.")
+        st.stop()
+
+    # Blur check
+    import cv2
+    blurry, lap_var = is_image_blurry(image_input)
+    if blurry:
+        st.error(f"❌ Image is too blurry (Laplacian variance={lap_var:.2f}).")
+        st.stop()
+
+    st.info("✅ Input quality checks passed. We validate input quality before inference.")
+
 
 # ---------------- PREDICTION LOGIC ----------------
 if image_input:
     resized = image_input.resize(IMG_SIZE)
     cnn_batch = np.expand_dims(np.array(resized),0)
-    eff_batch = efficient_preprocess(np.expand_dims(np.array(resized),0).astype(np.float32))
+    eff_batch = np.expand_dims(np.array(resized).astype(np.float32), 0)
 
     top3_details = {}
     inference_times = {}
+    entropy_scores = {}
     best_predictions = {}
 
     if model_choice in ["Custom CNN","Compare Both"] and cnn_model:
         start=time.time()
         preds=cnn_model.predict(cnn_batch,verbose=0)[0]
         inference_times["Custom CNN"]=time.time()-start
+        entropy_scores["Custom CNN"] = prediction_entropy(preds)
         top3=get_top_predictions(preds)
         top3_details["Custom CNN"]=top3
         best_predictions["Custom CNN"]=top3[0][0]
+        top_idx = np.argmax(preds)
+        confidence = preds[top_idx]
+        predicted_class = CLASS_NAMES[top_idx]
 
     if model_choice in ["EfficientNetB0","Compare Both"] and effnet_model:
         start=time.time()
         preds=effnet_model.predict(eff_batch,verbose=0)[0]
         inference_times["EfficientNetB0"]=time.time()-start
+        entropy_scores["EfficientNetB0"] = prediction_entropy(preds)
         top3=get_top_predictions(preds)
         top3_details["EfficientNetB0"]=top3
         best_predictions["EfficientNetB0"]=top3[0][0]
+        top_idx = np.argmax(preds)
+        confidence = preds[top_idx]
+        predicted_class = CLASS_NAMES[top_idx]
 
     # Determine final class
+    reasons = []
     if len(best_predictions)==2:
         if best_predictions["Custom CNN"]==best_predictions["EfficientNetB0"]:
             final_class=best_predictions["Custom CNN"]
@@ -256,13 +429,16 @@ if image_input:
             final_class=None
             final_conf=0
             agreement="🟡 Models disagree"
+            reasons.append("Model disagreement")
     else:
         final_class=list(best_predictions.values())[0] if best_predictions else None
         final_conf=list(top3_details.values())[0][0][1] if top3_details else 0
         agreement="Single model result"
 
-    # Check unknown
-    is_unknown = (final_class is None or final_conf < CONFIDENCE_THRESHOLD or agreement=="🟡 Models disagree")
+    if final_conf < CONFIDENCE_THRESHOLD:
+        reasons.append("Low confidence")
+
+    is_unknown = final_class is None or len(reasons) > 0
     if is_unknown:
         final_class = UNKNOWN_LABEL
 
@@ -302,14 +478,54 @@ if image_input:
             st.markdown(f"**{model_name}** ({agreement})")
             st.progress(best_cf)
             st.caption(f"{best_cf*100:.1f}% confidence • {inference_times[model_name]:.3f}s")
+            st.caption(f"Entropy: {entropy_scores[model_name]:.3f}")
             plot_top_predictions(model_name,preds)
         st.markdown('</div>',unsafe_allow_html=True)
         if final_class==UNKNOWN_LABEL:
             st.warning("⚠️ Prediction rejected due to low confidence or model disagreement.")
+    # ---------------- GRAD-CAM VISUALIZATION ----------------
+    if (
+        final_class != UNKNOWN_LABEL
+        and model_choice in ["EfficientNetB0", "Compare Both"]
+        and effnet_model is not None
+        and final_conf >= HIGH_CONF_THRESHOLD
+        and agreement.startswith("🟢")
+        ):
+        st.markdown("### 🔍 Model Attention (Grad-CAM)")
+        st.markdown("*This visualization shows which regions influenced the model’s decision.*")
+
+        heatmap = compute_gradcam(effnet_model, eff_batch, top_idx)
+        gradcam_image = overlay_gradcam(image_input, heatmap)
+        st.session_state["gradcam_image"] = gradcam_image
+
+        st.image(
+            gradcam_image,
+            caption="Grad-CAM: Model Focus Regions",
+            use_column_width=True
+            )
+
+        st.info(
+            "🧠 Grad-CAM highlights regions that most influenced the model’s confident prediction."
+            )
+    else:
+        st.warning(
+            "Grad-CAM suppressed due to low confidence, model disagreement, "
+            "or unsupported input."
+            )
+
 
     # PDF Download
     if top3_details:
-        pdf_buffer=generate_pdf_report(image_input,image_input.size,top3_details,agreement,inference_times)
+        pdf_buffer = generate_pdf_report(
+    image_input,
+    image_input.size,
+    top3_details,
+    agreement,
+    inference_times,
+    entropy_scores,
+    gradcam_image=st.session_state.get("gradcam_image")
+)
+
         st.download_button(
             "📄 Download Egyptian Recipe Report (PDF)",
             data=pdf_buffer,
