@@ -339,7 +339,7 @@ def generate_pdf_report(
 
 
 # ---------------- MAIN APP ----------------
-st.title("🥬 Egyptian Vegetable Classifier")
+st.title("🥬 Vegetables Classifier")
 st.markdown("*Upload a vegetable → Get authentic Egyptian recipes & nutrition!*")
 
 with st.expander("ℹ️ Model Scope & Limitations"):
