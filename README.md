@@ -13,7 +13,7 @@ The project combines machine learning, computer vision, model comparison, confid
 
 ---
 
-## 🔗 Project Repository
+## 🔗 Live Demo
 
 *https://vegetable-classifier-xnrf2uvq987m6rgg3tajde.streamlit.app/*
 
